@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+/results/
+# written to the working directory by Evo 2's vortex library on import
+activations_debug.log

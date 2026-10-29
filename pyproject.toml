@@ -1,0 +1,77 @@
+[project]
+name = "bgcbench"
+version = "1.0.0"
+description = "BGC-Bench: evaluate biosynthetic gene cluster encoders on five frozen-embedding tasks"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [
+    { name = "Hanlin Xiao" },
+    { name = "Eriko Takano" },
+    { name = "Mauricio A. Álvarez" },
+    { name = "Rainer Breitling" },
+]
+keywords = ["benchmark", "biosynthetic gene clusters", "MIBiG", "protein language models",
+            "representation learning"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+# esm (ESM C, for the BGCat encoder) supports Python 3.12 only; `uv sync` fetches 3.12 if needed.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # The evaluation numbers depend on these exact versions (lbfgs, Ridge, bootstrap).
+    "numpy==2.4.4",
+    "scipy==1.17.1",
+    "scikit-learn==1.8.0",
+    "pandas==3.0.2",
+    "torch==2.11.0",
+    # The paper's Kawano vectors were computed with transformers 5.5.0.
+    "transformers==5.5.0",
+    "safetensors>=0.6",
+    "huggingface-hub>=1.0",
+    "threadpoolctl>=3.1",  # thread caps of the linear probes
+    # ESM C (BGCat). Pinned to the commit that produced the published vectors.
+    "esm @ git+https://github.com/evolutionaryscale/esm.git@453b2e2e713ee35a1dcbc684b11d03303a59294e",
+]
+
+[project.urls]
+Repository = "https://github.com/Nugkta/BGC-Bench"
+Dataset = "https://huggingface.co/datasets/Nugkta/bgc-bench"
+
+[project.scripts]
+bgcbench = "bgcbench.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+# ESM C inference uses transformers 5.5.0 and omits notebook, structure and cloud extras.
+override-dependencies = [
+    "transformers==5.5.0",
+    "torchtext; sys_platform == 'never'",
+    "torchvision; sys_platform == 'never'",
+    "ipython; sys_platform == 'never'",
+    "ipywidgets; sys_platform == 'never'",
+    "py3dmol; sys_platform == 'never'",
+    "pydssp; sys_platform == 'never'",
+    "boto3; sys_platform == 'never'",
+    "dna-features-viewer; sys_platform == 'never'",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bgcbench"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]  # tests/test_release.py imports tools/build_release.py

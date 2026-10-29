@@ -1,0 +1,50 @@
+# GPU environment for the two encoders that need CUDA kernels: LC-PLM (mamba-ssm,
+# causal-conv1d) and Evo 2 7B (evo2, vtx, flash-attn). Linux x86_64 with an NVIDIA driver
+# for CUDA 13; prebuilt wheels for torch 2.9 / CUDA 13 / Python 3.12 are pinned below.
+# bgcbench is installed from ../..
+#
+#   cd envs/gpu && uv sync --frozen
+#   CUDA_VISIBLE_DEVICES=0 .venv/bin/bgcbench embed --encoder lcplm
+#
+# Score in the main environment afterwards (`bgcbench run --encoder lcplm` from the repo
+# root reads the cached embeddings), so that scoring uses the main environment's library versions.
+[project]
+name = "bgcbench-gpu"
+version = "1.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "bgcbench",
+    "torch==2.9.1",
+    "transformers==4.57.1",  # LC-PLM remote code
+    "evo2==0.6.0",
+    "vtx==1.1.0",
+    "mamba-ssm @ https://github.com/state-spaces/mamba/releases/download/v2.3.2.post1/mamba_ssm-2.3.2.post1%2Bcu13torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
+    "causal-conv1d @ https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.2.post1/causal_conv1d-1.6.2.post1%2Bcu13torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
+    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3%2Bcu13torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# The kernels above are built against torch 2.9.1; transformers 4.57.1 needs
+# huggingface-hub < 1.0. mamba-ssm's tilelang / TVM / quack extras are not used by
+# LC-PLM's Mamba-1 layers, and esm (ESM C) belongs to the main environment.
+override-dependencies = [
+    "torch==2.9.1",
+    "triton==3.5.1",
+    "transformers==4.57.1",
+    "huggingface-hub==0.36.2",
+    "esm; sys_platform == 'never'",
+    "tilelang; sys_platform == 'never'",
+    "apache-tvm-ffi; sys_platform == 'never'",
+    "quack-kernels; sys_platform == 'never'",
+]
+
+[tool.uv.sources]
+bgcbench = { path = "../..", editable = true }
+torch = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

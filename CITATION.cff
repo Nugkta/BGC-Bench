@@ -1,0 +1,54 @@
+cff-version: 1.2.0
+message: "If you use BGC-Bench, please cite the paper below and MIBiG 4.0."
+title: "BGC-Bench"
+version: 1.0.0
+license: MIT
+repository-code: "https://github.com/Nugkta/BGC-Bench"
+url: "https://huggingface.co/datasets/Nugkta/bgc-bench"
+keywords:
+  - benchmark
+  - biosynthetic gene clusters
+  - MIBiG
+  - natural products
+  - representation learning
+authors:
+  - family-names: Xiao
+    given-names: Hanlin
+    affiliation: The University of Manchester
+  - family-names: Takano
+    given-names: Eriko
+    affiliation: The University of Manchester
+  - family-names: Álvarez
+    given-names: Mauricio A.
+    affiliation: The University of Manchester
+  - family-names: Breitling
+    given-names: Rainer
+    affiliation: The University of Manchester
+preferred-citation:
+  type: conference-paper
+  title: "Data-Scarce, Multi-Granular, Multimodal: Benchmark Design for Biosynthetic Gene Clusters"
+  authors:
+    - family-names: Xiao
+      given-names: Hanlin
+    - family-names: Takano
+      given-names: Eriko
+    - family-names: Álvarez
+      given-names: Mauricio A.
+    - family-names: Breitling
+      given-names: Rainer
+  collection-title: "Advances in Neural Information Processing Systems (Evaluations and Datasets Track)"
+  conference:
+    name: "NeurIPS 2026"
+  year: 2026
+references:
+  - type: article
+    title: "MIBiG 4.0: advancing biosynthetic gene cluster curation through global collaboration"
+    authors:
+      - family-names: Zdouc
+        given-names: Mitja M.
+    journal: Nucleic Acids Research
+    volume: 53
+    start: D678
+    end: D690
+    year: 2025
+    doi: 10.1093/nar/gkae1115
