@@ -135,3 +135,93 @@ produce `--` columns.
 Pass custom vectors through `evaluate(..., reps={"gene": "genes.npz"})` or
 `--rep gene=genes.npz`. For built-in kinds, `--rep adomain=ad.npz` is equivalent to
 `--adomain-embeddings ad.npz`.
+
+## Active learning for your own tasks and strategies
+
+### Tasks
+
+A task joins the active-learning setting by defining two methods. `al_rows` returns the
+task's rows from its dataset only: IDs, test rows, and optional strata and groups for the
+fixed validation split. `al_readout` builds the probe from the vectors.
+
+All encoders therefore share the same rows. For each seed they also share the same starting
+labels and the same random order. This example adds both methods to the task above:
+
+```python
+from bgcbench import al
+
+@bgcbench.register_task
+class NRPvsRest(bgcbench.Task):
+    ...                                      # name, splits and evaluate as above
+
+    def al_rows(self):
+        df = self.data.split("t1ml_random")
+        return al.Rows(df["bgc_id"], (df["split"] == "test").to_numpy(),
+                       strata=df["NRP"], table=df)
+
+    def al_readout(self, reps, rows, *, device):
+        X = rows.features(reps["bgc"])       # every row needs a vector
+        return al.Classifier(X, rows.table["NRP"], metric="macro_auroc")
+
+result = al.run("bigcarp", tasks=["nrp_binary"])
+```
+
+The ready-made readouts are the main-table probes:
+
+| Readout | Probe | Metrics |
+|---|---|---|
+| `al.Classifier(X, y)` | Logistic regression | `"top1"`, `"macro_auroc"` |
+| `al.MultiLabel(X, Y)` | One-vs-rest logistic regression | `"macro_auroc"`, `"weighted_macro_auroc"` |
+| `al.Regressor(X, Y)` | Ridge regression | `"mean_spearman"` |
+
+Each readout handles constant labels and missing classes at small budgets. `metric` also
+accepts a function `(y_true, predictions) -> float`.
+
+To use another model, subclass `al.Readout` and implement `fit(rows, seed)`,
+`predict(fitted, rows)` and `score(predictions, rows)`. Add `gradients(fitted, rows)` for
+BADGE, and add `chance(rows)` to record a chance-level score.
+
+`Rows(..., groups=...)` keeps each group within either the pool or the validation split. The
+substrate task uses this to keep A-domains from the same BGC together. Set
+`al_stream` to fix the task's seed orderings; by default it is derived from the task name.
+
+### Strategies
+
+A strategy receives the current round and returns `k` unlabelled pool positions:
+
+```python
+@al.register_strategy("margin")
+def margin(ctx, k):
+    """Smallest gap between the two most likely classes."""
+    unl = ctx.unlabelled
+    p = np.sort(ctx.readout.predict(ctx.fitted, ctx.pool[unl]), axis=1)
+    return unl[np.argsort(p[:, -1] - p[:, -2], kind="stable")[:k]]
+```
+
+`ctx` provides `readout`, the round's `fitted` model, `pool` (row indices), `labelled`,
+`unlabelled`, `pool_features`, `seed`, `round` and `rng(stream)` for draws. It also has a
+`cache` dictionary that persists across rounds of one learning curve.
+
+Pass `needs_gradients=True` when a strategy calls `ctx.readout.gradients`. Tasks without
+gradients then report the strategy as `--`.
+
+### Running
+
+Strategies run in registration order, and the three built-in strategies run first. On the
+command line, import extensions with `--module` (also `--task-module`):
+
+```bash
+uv run bgcbench al run --encoder bigcarp --module my_plugins.py \
+    --tasks coarse nrp_binary --strategies random margin
+```
+
+With `workers` > 1 (`--workers`), each process imports the task and strategy modules again.
+Define extensions in an importable module or in the file passed with `--module`
+(`modules=[...]` in Python), rather than in an interactive session. A script that calls
+`al.run` or `al.evaluate` with workers needs the guard
+`if __name__ == "__main__":` around that call, because worker processes import the
+script again.
+
+`al.protocol("paper", seeds=range(1, 11), max_budget=128)` defines a custom protocol, and
+results record its settings. `al.summarize` and `bgcbench al summarize` compare only
+results that use the same protocol.

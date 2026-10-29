@@ -17,7 +17,7 @@ import random
 from contextlib import contextmanager
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # Dataset: splits, task tables, model inputs (see the dataset card).
 DATASET_REPO = "Nugkta/bgc-bench"

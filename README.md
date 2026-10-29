@@ -153,6 +153,46 @@ The guide also covers [alternative molecule embeddings](docs/advanced.md#alterna
 [custom tasks](docs/advanced.md#adding-a-task) and
 [new representation kinds](docs/advanced.md#adding-a-representation).
 
+## Active learning
+
+The active-learning setting refits each task's probe as the label budget grows. Each run
+starts from 16 labels and grows by a factor of about √2. Random acquisition, TypiClust and
+BADGE choose the rows to label next. BADGE needs gradients, so it is skipped for chemical
+properties.
+
+```bash
+uv run bgcbench al run --encoder bag_of_pfam             # quick protocol, CPU
+uv run bgcbench al run --encoder bigcarp --tasks coarse fine --strategies random typiclust
+uv run bgcbench al evaluate --embeddings my.npz --adomain-embeddings ad.npz
+```
+
+The default `quick` protocol runs seeds 1–5 up to 256 labels. `--protocol paper` runs the
+paper's setting: seeds 1–20 over the whole pool, with strategies selected on seeds 1–10 by
+validation score. `--seeds` and `--max-budget` override either protocol. Each learning curve
+runs on one CPU thread; `--workers` sets how many run in parallel.
+
+Results go to `results/al/<name>.json`. The table reports test AULC_low, the area under the
+learning curve from 16 to 256 labels on a log2 axis, with 95% seed-bootstrap intervals. Each
+finished curve is cached in `results/al/cells/`, so an interrupted run resumes.
+
+`uv run bgcbench al summarize results/al` compares encoders. It reports gains over random
+acquisition with corrected tests, label savings relative to Bag-of-Pfam, and the strategy
+selected for each encoder.
+
+To reproduce the paper's 3,240 learning curves, about 30 CPU hours, run:
+
+```bash
+bash scripts/reproduce_al.sh
+```
+
+The script reuses embeddings cached by `reproduce_main_table.sh`. Small differences in the
+vectors can change which examples a strategy selects, so curves can differ from the paper's
+when embeddings vary across hardware. With the released embeddings, six encoders reproduce the
+paper's curves exactly, and the gains of the other six stay within 0.5 points.
+
+See [active learning](docs/advanced.md#active-learning-for-your-own-tasks-and-strategies) to
+add tasks and strategies.
+
 ## Tests
 
 ```bash

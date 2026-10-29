@@ -38,6 +38,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .. import data, metrics, set_deterministic
+from ..al.readouts import GradEmbedding, Readout
 from .base import Task
 
 SPLITS = {"R": "t3_random", "S": "t3_scaffold_holdout", "G": "t3_gcf_holdout_c07",
@@ -118,9 +119,13 @@ class RoundRobinSampler:
 
 
 def train_head(bgc_emb: np.ndarray, item_emb: np.ndarray, bgc_items: list[np.ndarray],
-               relation: np.ndarray, seed: int, device: str) -> ContrastiveHead:
-    """Fit the contrastive head on the training BGCs; returns it with the best epoch restored."""
-    h = HYPER
+               relation: np.ndarray, seed: int, device: str,
+               hyper: dict | None = None) -> ContrastiveHead:
+    """Fit the contrastive head on the training BGCs; returns it with the best epoch restored.
+
+    ``hyper`` replaces :data:`HYPER` (active learning shortens the batches at small budgets).
+    """
+    h = HYPER if hyper is None else hyper
     n_train = len(bgc_emb)
     sampler = RoundRobinSampler(bgc_items, seed)
     dev = torch.device(device)
@@ -257,29 +262,47 @@ def _folds(u: Universe, split: str, seed: int):
         yield col == "train", col == "test", seed
 
 
-def _fold_hits(u: Universe, tr: np.ndarray, te: np.ndarray, fold_seed: int, device: str):
-    """Expected hit@10 per test BGC, and the test classes, for one trained fold."""
-    tr_idx, te_idx = np.flatnonzero(tr), np.flatnonzero(te)
-    if len(tr_idx) < 8 or len(te_idx) < 2:
-        raise ValueError(f"fold too small: {len(tr_idx)} train / {len(te_idx)} test BGCs")
+def train_fold(u: Universe, tr_idx: np.ndarray, seed: int, device: str,
+               hyper: dict | None = None) -> ContrastiveHead:
+    """The head trained on the BGCs ``tr_idx`` of ``u`` and the molecules they produce."""
     train_cmp = np.unique(np.concatenate([u.bgc_compounds[i] for i in tr_idx]))
     col = {c: j for j, c in enumerate(train_cmp)}
     items = [np.array([col[c] for c in u.bgc_compounds[i]], dtype=np.int64) for i in tr_idx]
     relation = np.zeros((len(tr_idx), len(train_cmp)), dtype=bool)
     for r, it in enumerate(items):
         relation[r, it] = True
-    model = train_head(u.bgc_emb[tr_idx], u.compound_emb[train_cmp], items, relation,
-                       fold_seed, device)
+    return train_head(u.bgc_emb[tr_idx], u.compound_emb[train_cmp], items, relation, seed,
+                      device, hyper)
 
+
+def query_gallery(u: Universe, te_idx: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The gallery of the queries ``te_idx``: every distinct molecule one of them produces,
+    and the (query, molecule) positives."""
     test_cmp = np.unique(np.concatenate([u.bgc_compounds[i] for i in te_idx]))
     tcol = {c: j for j, c in enumerate(test_cmp)}
     positives = np.zeros((len(te_idx), len(test_cmp)), dtype=bool)
     for r, i in enumerate(te_idx):
         positives[r, [tcol[c] for c in u.bgc_compounds[i]]] = True
+    return test_cmp, positives
+
+
+def query_hits(u: Universe, model: ContrastiveHead, te_idx: np.ndarray) -> np.ndarray:
+    """Expected hit@10 of each query BGC ``te_idx`` against its gallery."""
+    test_cmp, positives = query_gallery(u, te_idx)
     z_b = _project_unique(model.bgc_head, u.bgc_emb[te_idx])
     z_c = _project_unique(model.chem_head, u.compound_emb[test_cmp])
-    hits = metrics.expected_hit_at_k(_scores_unique(z_b, z_c), positives, K)
-    return hits, u.classes[te_idx], len(tr_idx), len(te_idx), len(test_cmp)
+    return metrics.expected_hit_at_k(_scores_unique(z_b, z_c), positives, K)
+
+
+def _fold_hits(u: Universe, tr: np.ndarray, te: np.ndarray, fold_seed: int, device: str):
+    """Expected hit@10 per test BGC, and the test classes, for one trained fold."""
+    tr_idx, te_idx = np.flatnonzero(tr), np.flatnonzero(te)
+    if len(tr_idx) < 8 or len(te_idx) < 2:
+        raise ValueError(f"fold too small: {len(tr_idx)} train / {len(te_idx)} test BGCs")
+    model = train_fold(u, tr_idx, fold_seed, device)
+    n_items = len(query_gallery(u, te_idx)[0])
+    hits = query_hits(u, model, te_idx)
+    return hits, u.classes[te_idx], len(tr_idx), len(te_idx), n_items
 
 
 def _one_hot(labels: np.ndarray) -> np.ndarray:
@@ -328,11 +351,104 @@ def evaluate(ids: np.ndarray, X: np.ndarray, split: str, *, n_boot: int = 500,
     }
 
 
+# Active learning
+AL_STEP_TARGET = 350   # optimiser steps of the main table: 50 epochs x 7 batches
+
+
+def al_hyper(n_labelled: int) -> dict:
+    """:data:`HYPER` with batches of ``min(256, n)`` and enough epochs for about 350 steps."""
+    batch = min(int(HYPER["batch_size"]), int(n_labelled))
+    epochs = math.ceil(AL_STEP_TARGET / math.ceil(n_labelled / batch))
+    return {**HYPER, "batch_size": batch, "n_epochs": epochs}
+
+
+def al_rows(ds: data.Dataset = data.MAIN):
+    """Active learning on the random split's retrieval universe; the validation rows are
+    stratified on the primary class."""
+    from ..al import Rows
+
+    universe = set(ds.read_csv("tasks/t3_universe.csv")["bgc_id"])
+    df = ds.split(SPLITS["R"])
+    df = df[df["bgc_id"].isin(universe)].reset_index(drop=True)
+    return Rows(df["bgc_id"], (df["split"] == "test").to_numpy(),
+                strata=df["primary_class"].astype(str).to_numpy(), table=df)
+
+
+@dataclass
+class _ALFit:
+    model: ContrastiveHead
+    labelled: np.ndarray
+    hyper: dict
+
+
+class RetrievalReadout(Readout):
+    """The contrastive head retrained from scratch on the labelled BGCs at every round, with
+    the curve's seed. Queries are the validation or test BGCs against the molecules they
+    produce; the score is class-macro R@10. BADGE's gradient is the cross-entropy gradient
+    at a BGC's projection against the products of the labelled BGCs."""
+
+    metric = "class-macro R@10"
+
+    def __init__(self, u: Universe, device: str = "cpu") -> None:
+        super().__init__(u.bgc_emb)
+        self.u, self.device = u, device
+
+    def fit(self, rows, seed):
+        hyper = al_hyper(len(rows))
+        return _ALFit(train_fold(self.u, rows, seed, self.device, hyper), np.asarray(rows),
+                      hyper)
+
+    def predict(self, fitted, rows):
+        return query_hits(self.u, fitted.model, rows)
+
+    def score(self, hits, rows):
+        return metrics.class_macro(hits, _one_hot(self.u.classes[rows]))
+
+    def chance(self, rows):
+        """Class-macro R@10 of a model that ties every molecule."""
+        _, positives = query_gallery(self.u, rows)
+        return self.score(metrics.expected_hit_at_k(np.zeros(positives.shape), positives, K),
+                          rows)
+
+    def gradients(self, fitted, rows):
+        gallery = np.unique(np.concatenate([self.u.bgc_compounds[i] for i in fitted.labelled]))
+        model = fitted.model
+        z_b = _project_unique(model.bgc_head, self.u.bgc_emb[rows]).astype(np.float64)
+        z_c = _project_unique(model.chem_head, self.u.compound_emb[gallery]).astype(np.float64)
+        with torch.no_grad():
+            tau = float(model.logit_scale.detach().cpu().item())
+        logits = tau * (z_b @ z_c.T)
+        logits -= logits.max(axis=1, keepdims=True)
+        p = np.exp(logits)
+        p /= p.sum(axis=1, keepdims=True)
+        p[np.arange(len(rows)), np.argmax(logits, axis=1)] -= 1.0
+        return GradEmbedding(E=tau * (p @ z_c))
+
+    def info(self, fitted):
+        return {"batch_size": int(fitted.hyper["batch_size"]),
+                "n_epochs": int(fitted.hyper["n_epochs"])}
+
+
+def al_readout(reps: dict, rows, *, device: str = "cpu", ds: data.Dataset = data.MAIN):
+    b, m = reps["bgc"], reps["molecule"]
+    u = load_universe(b.ids, b.X, SPLITS["R"], (m.ids, m.X), ds)
+    if not np.array_equal(u.split_df["bgc_id"].to_numpy().astype(str), rows.ids):
+        raise AssertionError("retrieval universe rows differ from the AL rows")
+    return RetrievalReadout(u, device)
+
+
 class Retrieval(Task):
     name, metric, splits, threads = "retrieval", "class-macro R@10", SPLITS, 1
     requires = ("bgc", "molecule")
+    al_stream = 104
 
     def evaluate(self, reps, split, *, n_boot, device):
         b, m = reps["bgc"], reps["molecule"]
         return evaluate(b.ids, b.X, split, n_boot=n_boot, chem=(m.ids, m.X),
                         device=device, ds=self.data)
+
+    def al_rows(self):
+        return al_rows(self.data)
+
+    def al_readout(self, reps, rows, *, device):
+        return al_readout(reps, rows, device=device, ds=self.data)

@@ -67,9 +67,52 @@ def evaluate(ids: np.ndarray, X: np.ndarray, split: str, *, n_boot: int = 500,
             "n_classes": len(names), **coverage}
 
 
+def rarest_label_strata(Y: np.ndarray, names: list[str]) -> np.ndarray:
+    """Each row's rarest class (fewest positives in ``Y``, ties by class name); strata with
+    a single row are pooled into one."""
+    counts = (Y > 0).sum(axis=0)
+    order = sorted(range(len(names)), key=lambda j: (int(counts[j]), names[j]))
+    rank = np.empty(len(names), dtype=np.int64)
+    rank[order] = np.arange(len(names))
+    strata = np.array([names[js[np.argmin(rank[js])]] if len(js) else "" for js in
+                       (np.flatnonzero(row > 0) for row in Y)], dtype=object)
+    values, sizes = np.unique(strata.astype(str), return_counts=True)
+    small = set(values[sizes < 2].tolist())
+    if small and sum(int(n) for v, n in zip(values, sizes) if v in small) < 2:
+        raise ValueError("a single row would form the pooled stratum")
+    return np.array(["__pooled__" if s in small else s for s in strata], dtype=object)
+
+
+def al_rows(ds: data.Dataset = data.MAIN):
+    """Active learning on the random split, fold 4 as the test set; the validation rows are
+    stratified on each training BGC's rarest class."""
+    from ..al import Rows
+
+    df = ds.split(SPLITS["R"])
+    test = (df["fold"] == TEST_FOLD).to_numpy()
+    Y = label_matrix(df["labels"], classes(ds))
+    strata = np.full(len(df), "", dtype=object)
+    strata[~test] = rarest_label_strata(Y[~test], classes(ds))
+    return Rows(df["bgc_id"], test, strata=strata, table=df)
+
+
+def al_readout(reps: dict, rows, ds: data.Dataset = data.MAIN):
+    from ..al import MultiLabel
+
+    Y = label_matrix(rows.table["labels"], classes(ds))
+    return MultiLabel(rows.features(reps["bgc"]), Y, metric="weighted_macro_auroc")
+
+
 class Fine(Task):
     name, metric, splits, threads = "fine", "weighted macro-AUROC", SPLITS, 1
+    al_stream = 103
 
     def evaluate(self, reps, split, *, n_boot, device):
         b = reps["bgc"]
         return evaluate(b.ids, b.X, split, n_boot=n_boot, ds=self.data)
+
+    def al_rows(self):
+        return al_rows(self.data)
+
+    def al_readout(self, reps, rows, *, device):
+        return al_readout(reps, rows, self.data)

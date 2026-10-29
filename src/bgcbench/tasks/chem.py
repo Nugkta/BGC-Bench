@@ -55,9 +55,36 @@ def evaluate(ids: np.ndarray, X: np.ndarray, split: str, *, n_boot: int = 500,
     return {**out, "n_train": int(len(Y_tr)), "n_test": int(len(Y_te)), **coverage}
 
 
+def al_rows(ds: data.Dataset = data.MAIN):
+    """Active learning on the random split: its BGCs with Pfam inputs and all 13
+    descriptors."""
+    from ..al import Rows, design
+
+    df = ds.split(SPLITS["R"]).merge(ds.read_csv("tasks/chem_descriptors.csv"), on="bgc_id",
+                                     how="inner")
+    df = df[df["bgc_id"].isin(design.pfam_universe(ds))]
+    df = df[~df[TARGETS].isna().any(axis=1)].reset_index(drop=True)
+    return Rows(df["bgc_id"], (df["split"] == "test").to_numpy(), table=df)
+
+
+def al_readout(reps: dict, rows):
+    """Ridge on the 13 descriptors; a descriptor predicted as a constant scores rho = 0."""
+    from ..al import Regressor
+
+    return Regressor(rows.features(reps["bgc"]), rows.table[TARGETS].to_numpy(),
+                     metric="mean_spearman")
+
+
 class Chem(Task):
     name, metric, splits, threads = "chem", "mean Spearman rho", SPLITS, 8
+    al_stream = 102
 
     def evaluate(self, reps, split, *, n_boot, device):
         b = reps["bgc"]
         return evaluate(b.ids, b.X, split, n_boot=n_boot, ds=self.data)
+
+    def al_rows(self):
+        return al_rows(self.data)
+
+    def al_readout(self, reps, rows, *, device):
+        return al_readout(reps, rows)

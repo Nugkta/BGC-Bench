@@ -47,20 +47,8 @@ def evaluate(bgc, adomain=None, chem_embeddings=None, *, reps: dict | None = Non
     :func:`bgcbench.set_deterministic`.
     """
     _check_options(n_boot, threads)
-    given = {"bgc": bgc, "adomain": adomain, "molecule": chem_embeddings}
-    twice = sorted(k for k in reps or {} if given.get(k) is not None)
-    if twice:
-        raise ValueError(f"{twice} given both as an argument and in reps")
-    supplied = {kind: obj for kind, obj in {**given, **(reps or {})}.items() if obj is not None}
-    vectors = {kind: kinds.coerce(kind, obj) for kind, obj in supplied.items()}
-    # Kinds whose protocol default (the shipped MoLFormer molecules) the caller replaced.
-    replaced = {kind: _source(obj) for kind, obj in supplied.items()
-                if kinds.get(kind).default is not None}
     selected = select(tasks)
-    for kind in {k for t in selected for k in t.requires} - set(vectors):
-        default = kinds.get(kind).default
-        if default is not None:
-            vectors[kind] = kinds.coerce(kind, default())
+    vectors, replaced = gather(bgc, adomain, chem_embeddings, reps, selected)
     result = Result(name, env={**environment(), "threads": {}, "retrieval_device":
                                device_name(retrieval_device), "n_boot": n_boot})
     for task in selected:
@@ -95,6 +83,27 @@ def evaluate(bgc, adomain=None, chem_embeddings=None, *, reps: dict | None = Non
             log(f"  {col:<14}{cell['point']:.4f}  [{cell['ci'][0]:.4f}, {cell['ci'][1]:.4f}]"
                 f"  ({cell['seconds']} s)")
     return result
+
+
+def gather(bgc, adomain=None, chem_embeddings=None, reps: dict | None = None,
+           tasks=()) -> tuple[dict, dict]:
+    """``({kind: Embeddings}, {kind: source})``: the given vectors, plus the default vectors
+    of kinds the ``tasks`` need (the shipped MoLFormer molecules); the second dict names the
+    given vectors that replace such a default."""
+    given = {"bgc": bgc, "adomain": adomain, "molecule": chem_embeddings}
+    twice = sorted(k for k in reps or {} if given.get(k) is not None)
+    if twice:
+        raise ValueError(f"{twice} given both as an argument and in reps")
+    supplied = {kind: obj for kind, obj in {**given, **(reps or {})}.items() if obj is not None}
+    vectors = {kind: kinds.coerce(kind, obj) for kind, obj in supplied.items()}
+    # Kinds whose protocol default (the shipped MoLFormer molecules) the caller replaced.
+    replaced = {kind: _source(obj) for kind, obj in supplied.items()
+                if kinds.get(kind).default is not None}
+    for kind in {k for t in tasks for k in t.requires} - set(vectors):
+        default = kinds.get(kind).default
+        if default is not None:
+            vectors[kind] = kinds.coerce(kind, default())
+    return vectors, replaced
 
 
 def _check_options(n_boot: int, threads: int | None) -> None:

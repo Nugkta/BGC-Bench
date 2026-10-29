@@ -59,6 +59,21 @@ class Task:
     def evaluate(self, reps: dict, split: str, *, n_boot: int, device: str) -> dict:
         raise NotImplementedError
 
+    # Active learning (bgcbench.al). A task takes part by returning its rows from ``al_rows``
+    # and a readout from ``al_readout``; tasks without ``al_rows`` are not AL tasks.
+    #: Stream of the seed permutations (``default_rng([seed, al_stream])``); ``None``: derived
+    #: from the task name.
+    al_stream: int | None = None
+
+    def al_rows(self):
+        """The task's AL rows (:class:`bgcbench.al.Rows`) from its dataset alone, or ``None``."""
+        return None
+
+    def al_readout(self, reps: dict, rows, *, device: str):
+        """The readout (:class:`bgcbench.al.Readout`) refitted at every round, from
+        ``{kind: Embeddings}`` of the kinds in ``requires`` and the rows of :meth:`al_rows`."""
+        raise NotImplementedError
+
     def __repr__(self) -> str:
         return f"<Task {self.name} v{self.version}>"
 

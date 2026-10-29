@@ -1,6 +1,6 @@
 [project]
 name = "bgcbench"
-version = "1.0.0"
+version = "1.1.0"
 description = "BGC-Bench: evaluate biosynthetic gene cluster encoders on five frozen-embedding tasks"
 readme = "README.md"
 license = "MIT"

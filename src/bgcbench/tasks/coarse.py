@@ -30,9 +30,34 @@ def evaluate(ids: np.ndarray, X: np.ndarray, split: str, *, n_boot: int = 500,
     return {**out, "n_train": int(train.sum()), "n_test": int(test.sum()), **coverage}
 
 
+def al_rows(ds: data.Dataset = data.MAIN):
+    """Active learning on the random split: its BGCs with Pfam inputs; the validation rows
+    are stratified on each BGC's first class."""
+    from ..al import Rows, design
+
+    df = ds.split(SPLITS["R"])
+    df = df[df["bgc_id"].isin(design.pfam_universe(ds))].reset_index(drop=True)
+    strata = np.asarray(CLASSES)[df[CLASSES].to_numpy().argmax(axis=1)]
+    return Rows(df["bgc_id"], (df["split"] == "test").to_numpy(), strata=strata, table=df)
+
+
+def al_readout(reps: dict, rows):
+    from ..al import MultiLabel
+
+    Y = rows.table[CLASSES].to_numpy().astype(np.float32)
+    return MultiLabel(rows.features(reps["bgc"]), Y, metric="macro_auroc")
+
+
 class Coarse(Task):
     name, metric, splits, threads = "coarse", "macro-AUROC", SPLITS, 8
+    al_stream = 101
 
     def evaluate(self, reps, split, *, n_boot, device):
         b = reps["bgc"]
         return evaluate(b.ids, b.X, split, n_boot=n_boot, ds=self.data)
+
+    def al_rows(self):
+        return al_rows(self.data)
+
+    def al_readout(self, reps, rows, *, device):
+        return al_readout(reps, rows)

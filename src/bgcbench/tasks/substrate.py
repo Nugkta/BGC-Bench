@@ -66,11 +66,40 @@ def evaluate(domain_ids: np.ndarray, X: np.ndarray, split: str, *, n_boot: int =
             "majority": majority, **coverage}
 
 
+AL_TEST_FOLD = 4
+
+
+def al_rows(ds: data.Dataset = data.MAIN):
+    """Active learning on the 5-fold split's scored domains, fold 4 as the test set; the
+    validation rows are stratified on the substrate and keep each BGC's domains together."""
+    from ..al import Rows
+
+    df = ds.split(SPLITS["F"])
+    df = df[df["level_b"] & df["substrate"].notna()].reset_index(drop=True)
+    return Rows(df["domain_id"], (df["fold"] == AL_TEST_FOLD).to_numpy(), kind="adomain",
+                strata=df["substrate"].astype(str).to_numpy(),
+                groups=df["bgc_id"].astype(str).to_numpy(), table=df)
+
+
+def al_readout(reps: dict, rows):
+    from ..al import Classifier
+
+    return Classifier(rows.features(reps["adomain"]), rows.table["substrate"].astype(str),
+                      metric="top1")
+
+
 class Substrate(Task):
     name, metric, splits, threads = "substrate", "top-1 accuracy", SPLITS, 4
     requires = ("adomain",)
     threads_override = {"evo2_7b": 8, "lcplm": 8}  # the published Evo 2 and LC-PLM cells used 8
+    al_stream = 105
 
     def evaluate(self, reps, split, *, n_boot, device):
         a = reps["adomain"]
         return evaluate(a.ids, a.X, split, n_boot=n_boot, ds=self.data)
+
+    def al_rows(self):
+        return al_rows(self.data)
+
+    def al_readout(self, reps, rows, *, device):
+        return al_readout(reps, rows)
